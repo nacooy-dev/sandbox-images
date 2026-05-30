@@ -1,0 +1,81 @@
+# GitHub Action Workflow for building sandbox images
+#
+# Builds Docker images from the images/ directory and uploads
+# them as tar.gz artifacts for download to NUC / customer sites.
+#
+# Trigger:
+#   - Push: builds all images that have changes (Dockerfile detected)
+#   - Manual (workflow_dispatch): build specific image or "all"
+
+name: Build Sandbox Images
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'images/**/Dockerfile'
+  workflow_dispatch:
+    inputs:
+      image:
+        description: 'Image name (e.g., pi-sandbox) or "all"'
+        required: true
+        default: 'all'
+
+jobs:
+  list:
+    runs-on: ubuntu-latest
+    outputs:
+      images: ${{ steps.set-matrix.outputs.images }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: set-matrix
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            INPUT="${{ github.event.inputs.image }}"
+            if [ "$INPUT" = "all" ]; then
+              IMAGES=$(ls -d images/*/ | sed 's|images/||;s|/||' | jq -R -s -c 'split("\n") | map(select(length > 0))')
+            else
+              IMAGES=$(echo "[\"$INPUT\"]")
+            fi
+          else
+            # On push: build only affected images
+            CHANGED=$(git diff --name-only HEAD~1 -- images/*/Dockerfile 2>/dev/null || echo "")
+            if [ -z "$CHANGED" ]; then
+              # No Dockerfile changed? Build everything anyway
+              IMAGES=$(ls -d images/*/ | sed 's|images/||;s|/||' | jq -R -s -c 'split("\n") | map(select(length > 0))')
+            else
+              IMAGES=$(echo "$CHANGED" | sed 's|images/||;s|/Dockerfile||' | jq -R -s -c 'split("\n") | map(select(length > 0))')
+            fi
+          fi
+          echo "images=$IMAGES" >> $GITHUB_OUTPUT
+
+  build:
+    needs: list
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ${{ fromJSON(needs.list.outputs.images) }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and save ${{ matrix.image }}
+        run: |
+          docker build -t ${{ matrix.image }}:latest -f images/${{ matrix.image }}/Dockerfile images/${{ matrix.image }}
+          docker save ${{ matrix.image }}:latest | gzip -c > /tmp/${{ matrix.image }}.tar.gz
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.image }}
+          path: /tmp/${{ matrix.image }}.tar.gz
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Show result
+        run: ls -lh /tmp/${{ matrix.image }}.tar.gz
