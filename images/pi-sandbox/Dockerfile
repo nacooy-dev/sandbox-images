@@ -12,24 +12,26 @@ RUN apt-get update && apt-get install -y \
     sudo \
     && rm -rf /var/lib/apt/lists/*
 
+# 在公共路径安装 Pi（避免 bun install -g 写入 /root/ 导致权限问题）
+RUN mkdir -p /opt/pi-app && cd /opt/pi-app && \
+    bun init -y && \
+    bun add @earendil-works/pi-coding-agent && \
+    ln -sf /opt/pi-app/node_modules/.bin/pi /usr/local/bin/pi && \
+    chmod -R a+rX /opt/pi-app
+
+# 验证安装（root 下）
+RUN pi --version && bun --version
+
 # 创建非 root 用户
 RUN useradd -m -s /bin/bash pi && \
     echo "pi ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
-
-# 以 pi 用户安装 Pi（bun install -g 会装到 ~/.bun/bin/）
-USER pi
-RUN bun install -g @earendil-works/pi-coding-agent
-ENV PATH="/home/pi/.bun/bin:${PATH}"
-
-# 验证安装
-RUN pi --version && bun --version
 
 # 配置 git
 RUN git config --global user.name "Pi Agent" && \
     git config --global user.email "pi@sandbox.local"
 
+USER pi
 WORKDIR /home/pi/workspace
-
 RUN mkdir -p /home/pi/.pi/agent
 
 ENTRYPOINT ["pi"]
